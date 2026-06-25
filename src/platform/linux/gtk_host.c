@@ -3,6 +3,7 @@
 #include <gtk/gtk.h>
 #include <webkit/webkit.h>
 #include <glib/gstdio.h>
+#include <dlfcn.h>
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
@@ -2234,6 +2235,168 @@ int zero_native_gtk_clear_recent_documents(zero_native_gtk_host_t *host) {
     g_bookmark_file_free(bookmarks);
     g_free(bookmarks_path);
     return ok;
+}
+
+typedef struct zero_native_secret_schema_attribute {
+    const char *name;
+    int type;
+} zero_native_secret_schema_attribute_t;
+
+typedef struct zero_native_secret_schema {
+    const char *name;
+    int flags;
+    zero_native_secret_schema_attribute_t attributes[32];
+} zero_native_secret_schema_t;
+
+typedef gboolean (*zero_native_secret_password_store_sync_fn)(const zero_native_secret_schema_t *schema, const char *collection, const char *label, const char *password, GCancellable *cancellable, GError **error, ...);
+typedef char *(*zero_native_secret_password_lookup_sync_fn)(const zero_native_secret_schema_t *schema, GCancellable *cancellable, GError **error, ...);
+typedef gboolean (*zero_native_secret_password_clear_sync_fn)(const zero_native_secret_schema_t *schema, GCancellable *cancellable, GError **error, ...);
+
+typedef struct zero_native_secret_api {
+    int attempted;
+    void *handle;
+    zero_native_secret_password_store_sync_fn store_sync;
+    zero_native_secret_password_lookup_sync_fn lookup_sync;
+    zero_native_secret_password_clear_sync_fn clear_sync;
+} zero_native_secret_api_t;
+
+static zero_native_secret_api_t zero_native_secret_api = {0};
+
+static const zero_native_secret_schema_t zero_native_credential_schema = {
+    "dev.zero_native.Credential",
+    0,
+    {
+        { "service", 0 },
+        { "account", 0 },
+        { NULL, 0 },
+    },
+};
+
+static void *zero_native_dlsym(void *handle, const char *name) {
+    dlerror();
+    void *symbol = dlsym(handle, name);
+    return dlerror() ? NULL : symbol;
+}
+
+static zero_native_secret_api_t *zero_native_load_secret_api(void) {
+    if (zero_native_secret_api.attempted) return zero_native_secret_api.handle ? &zero_native_secret_api : NULL;
+    zero_native_secret_api.attempted = 1;
+
+    void *handle = dlopen("libsecret-1.so.0", RTLD_NOW | RTLD_LOCAL);
+    if (!handle) handle = dlopen("libsecret-1.so", RTLD_NOW | RTLD_LOCAL);
+    if (!handle) return NULL;
+
+    zero_native_secret_api.store_sync = (zero_native_secret_password_store_sync_fn)zero_native_dlsym(handle, "secret_password_store_sync");
+    zero_native_secret_api.lookup_sync = (zero_native_secret_password_lookup_sync_fn)zero_native_dlsym(handle, "secret_password_lookup_sync");
+    zero_native_secret_api.clear_sync = (zero_native_secret_password_clear_sync_fn)zero_native_dlsym(handle, "secret_password_clear_sync");
+    if (!zero_native_secret_api.store_sync || !zero_native_secret_api.lookup_sync || !zero_native_secret_api.clear_sync) {
+        dlclose(handle);
+        memset(&zero_native_secret_api, 0, sizeof(zero_native_secret_api));
+        zero_native_secret_api.attempted = 1;
+        return NULL;
+    }
+
+    zero_native_secret_api.handle = handle;
+    return &zero_native_secret_api;
+}
+
+static void zero_native_secure_free(char *bytes, size_t len) {
+    if (!bytes) return;
+    volatile char *cursor = bytes;
+    for (size_t i = 0; i < len; i++) cursor[i] = 0;
+    free(bytes);
+}
+
+int zero_native_gtk_credentials_available(zero_native_gtk_host_t *host) {
+    (void)host;
+    return zero_native_load_secret_api() ? 1 : 0;
+}
+
+int zero_native_gtk_set_credential(zero_native_gtk_host_t *host, const char *service, size_t service_len, const char *account, size_t account_len, const char *secret, size_t secret_len) {
+    (void)host;
+    zero_native_secret_api_t *api = zero_native_load_secret_api();
+    if (!api || !service || service_len == 0 || !account || account_len == 0 || !secret || secret_len == 0) return 0;
+
+    char *service_copy = zero_native_strndup(service, service_len);
+    char *account_copy = zero_native_strndup(account, account_len);
+    char *secret_copy = zero_native_strndup(secret, secret_len);
+    if (!service_copy || !account_copy || !secret_copy) {
+        free(service_copy);
+        free(account_copy);
+        zero_native_secure_free(secret_copy, secret_len);
+        return 0;
+    }
+
+    char *label = g_strdup_printf("%s:%s", service_copy, account_copy);
+    if (!label) {
+        free(service_copy);
+        free(account_copy);
+        zero_native_secure_free(secret_copy, secret_len);
+        return 0;
+    }
+
+    GError *error = NULL;
+    gboolean ok = api->store_sync(&zero_native_credential_schema, "default", label, secret_copy, NULL, &error, "service", service_copy, "account", account_copy, NULL);
+    if (error) g_error_free(error);
+
+    g_free(label);
+    free(service_copy);
+    free(account_copy);
+    zero_native_secure_free(secret_copy, secret_len);
+    return ok ? 1 : 0;
+}
+
+size_t zero_native_gtk_get_credential(zero_native_gtk_host_t *host, const char *service, size_t service_len, const char *account, size_t account_len, char *buffer, size_t buffer_len) {
+    (void)host;
+    zero_native_secret_api_t *api = zero_native_load_secret_api();
+    if (!api || !service || service_len == 0 || !account || account_len == 0 || !buffer) return 0;
+
+    char *service_copy = zero_native_strndup(service, service_len);
+    char *account_copy = zero_native_strndup(account, account_len);
+    if (!service_copy || !account_copy) {
+        free(service_copy);
+        free(account_copy);
+        return 0;
+    }
+
+    GError *error = NULL;
+    char *password = api->lookup_sync(&zero_native_credential_schema, NULL, &error, "service", service_copy, "account", account_copy, NULL);
+    free(service_copy);
+    free(account_copy);
+    if (error) {
+        g_error_free(error);
+        return (size_t)-1;
+    }
+    if (!password) return 0;
+
+    size_t password_len = strlen(password);
+    if (password_len <= buffer_len && password_len > 0) memcpy(buffer, password, password_len);
+    g_free(password);
+    return password_len;
+}
+
+int zero_native_gtk_delete_credential(zero_native_gtk_host_t *host, const char *service, size_t service_len, const char *account, size_t account_len) {
+    (void)host;
+    zero_native_secret_api_t *api = zero_native_load_secret_api();
+    if (!api || !service || service_len == 0 || !account || account_len == 0) return 0;
+
+    char *service_copy = zero_native_strndup(service, service_len);
+    char *account_copy = zero_native_strndup(account, account_len);
+    if (!service_copy || !account_copy) {
+        free(service_copy);
+        free(account_copy);
+        return 0;
+    }
+
+    GError *error = NULL;
+    gboolean ok = api->clear_sync(&zero_native_credential_schema, NULL, &error, "service", service_copy, "account", account_copy, NULL);
+    free(service_copy);
+    free(account_copy);
+    if (error) {
+        g_error_free(error);
+        return -1;
+    }
+    return ok ? 1 : 0;
 }
 
 typedef struct zero_native_clipboard_read_state {

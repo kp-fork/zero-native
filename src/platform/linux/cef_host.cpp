@@ -473,6 +473,42 @@ int zero_native_gtk_clear_recent_documents(Host *host) {
     return 0;
 }
 
+int zero_native_gtk_credentials_available(Host *host) {
+    (void)host;
+    return 0;
+}
+
+int zero_native_gtk_set_credential(Host *host, const char *service, size_t service_len, const char *account, size_t account_len, const char *secret, size_t secret_len) {
+    (void)host;
+    (void)service;
+    (void)service_len;
+    (void)account;
+    (void)account_len;
+    (void)secret;
+    (void)secret_len;
+    return 0;
+}
+
+size_t zero_native_gtk_get_credential(Host *host, const char *service, size_t service_len, const char *account, size_t account_len, char *buffer, size_t buffer_len) {
+    (void)host;
+    (void)service;
+    (void)service_len;
+    (void)account;
+    (void)account_len;
+    (void)buffer;
+    (void)buffer_len;
+    return 0;
+}
+
+int zero_native_gtk_delete_credential(Host *host, const char *service, size_t service_len, const char *account, size_t account_len) {
+    (void)host;
+    (void)service;
+    (void)service_len;
+    (void)account;
+    (void)account_len;
+    return 0;
+}
+
 size_t zero_native_gtk_clipboard_read(Host *host, char *buffer, size_t buffer_len) {
     (void)host;
     (void)buffer;

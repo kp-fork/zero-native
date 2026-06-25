@@ -97,6 +97,10 @@ extern fn zero_native_gtk_reveal_path(host: *GtkHost, path: [*]const u8, path_le
 extern fn zero_native_gtk_show_notification(host: *GtkHost, title: [*]const u8, title_len: usize, subtitle: [*]const u8, subtitle_len: usize, body: [*]const u8, body_len: usize) c_int;
 extern fn zero_native_gtk_add_recent_document(host: *GtkHost, path: [*]const u8, path_len: usize) c_int;
 extern fn zero_native_gtk_clear_recent_documents(host: *GtkHost) c_int;
+extern fn zero_native_gtk_credentials_available(host: *GtkHost) c_int;
+extern fn zero_native_gtk_set_credential(host: *GtkHost, service: [*]const u8, service_len: usize, account: [*]const u8, account_len: usize, secret: [*]const u8, secret_len: usize) c_int;
+extern fn zero_native_gtk_get_credential(host: *GtkHost, service: [*]const u8, service_len: usize, account: [*]const u8, account_len: usize, buffer: [*]u8, buffer_len: usize) usize;
+extern fn zero_native_gtk_delete_credential(host: *GtkHost, service: [*]const u8, service_len: usize, account: [*]const u8, account_len: usize) c_int;
 extern fn zero_native_gtk_clipboard_read(host: *GtkHost, buffer: [*]u8, buffer_len: usize) usize;
 extern fn zero_native_gtk_clipboard_write(host: *GtkHost, text: [*]const u8, text_len: usize) void;
 extern fn zero_native_gtk_clipboard_read_data(host: *GtkHost, mime_type: [*]const u8, mime_type_len: usize, buffer: [*]u8, buffer_len: usize) usize;
@@ -225,6 +229,9 @@ pub const LinuxPlatform = struct {
                 .show_notification_fn = showNotification,
                 .add_recent_document_fn = addRecentDocument,
                 .clear_recent_documents_fn = clearRecentDocuments,
+                .set_credential_fn = setCredential,
+                .get_credential_fn = getCredential,
+                .delete_credential_fn = deleteCredential,
                 .create_tray_fn = createTray,
                 .update_tray_menu_fn = updateTrayMenu,
                 .remove_tray_fn = removeTray,
@@ -669,6 +676,55 @@ fn clearRecentDocuments(context: ?*anyopaque) anyerror!void {
     const self: *LinuxPlatform = @ptrCast(@alignCast(context.?));
     if (self.web_engine != .system) return error.UnsupportedService;
     if (zero_native_gtk_clear_recent_documents(self.host) == 0) return error.UnsupportedService;
+}
+
+fn setCredential(context: ?*anyopaque, credential: platform_mod.Credential) anyerror!void {
+    const self: *LinuxPlatform = @ptrCast(@alignCast(context.?));
+    if (self.web_engine != .system) return error.UnsupportedService;
+    if (zero_native_gtk_credentials_available(self.host) == 0) return error.UnsupportedService;
+    if (zero_native_gtk_set_credential(
+        self.host,
+        credential.service.ptr,
+        credential.service.len,
+        credential.account.ptr,
+        credential.account.len,
+        credential.secret.ptr,
+        credential.secret.len,
+    ) == 0) return error.UnsupportedService;
+}
+
+fn getCredential(context: ?*anyopaque, key: platform_mod.CredentialKey, buffer: []u8) anyerror![]const u8 {
+    const self: *LinuxPlatform = @ptrCast(@alignCast(context.?));
+    if (self.web_engine != .system) return error.UnsupportedService;
+    if (zero_native_gtk_credentials_available(self.host) == 0) return error.UnsupportedService;
+    const len = zero_native_gtk_get_credential(
+        self.host,
+        key.service.ptr,
+        key.service.len,
+        key.account.ptr,
+        key.account.len,
+        buffer.ptr,
+        buffer.len,
+    );
+    if (len == std.math.maxInt(usize)) return error.UnsupportedService;
+    if (len == 0) return error.CredentialNotFound;
+    if (len > buffer.len) return error.NoSpaceLeft;
+    return buffer[0..len];
+}
+
+fn deleteCredential(context: ?*anyopaque, key: platform_mod.CredentialKey) anyerror!void {
+    const self: *LinuxPlatform = @ptrCast(@alignCast(context.?));
+    if (self.web_engine != .system) return error.UnsupportedService;
+    if (zero_native_gtk_credentials_available(self.host) == 0) return error.UnsupportedService;
+    const result = zero_native_gtk_delete_credential(
+        self.host,
+        key.service.ptr,
+        key.service.len,
+        key.account.ptr,
+        key.account.len,
+    );
+    if (result < 0) return error.UnsupportedService;
+    if (result == 0) return error.CredentialNotFound;
 }
 
 fn createTray(context: ?*anyopaque, options: platform_mod.TrayOptions) anyerror!void {

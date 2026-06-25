@@ -199,6 +199,7 @@ fn linkPlatform(b: *std.Build, target: std.Build.ResolvedTarget, app_mod: *std.B
                 app_mod.addCSourceFile(.{ .file = zeroNativePath(b, zero_native_path, "src/platform/linux/gtk_host.c"), .flags = &.{} });
                 app_mod.linkSystemLibrary("gtk4", .{});
                 app_mod.linkSystemLibrary("webkitgtk-6.0", .{});
+                app_mod.linkSystemLibrary("dl", .{});
             },
             .chromium => {
                 const cef_check = addCefCheck(b, target, cef_dir);
