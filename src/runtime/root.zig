@@ -4656,8 +4656,27 @@ test "runtime handles built-in JavaScript webview bridge commands" {
 
 test "runtime handles built-in JavaScript view bridge commands" {
     const TestApp = struct {
+        command_count: u32 = 0,
+        last_command: []const u8 = "",
+        last_source: CommandSource = .runtime,
+        last_view_label: []const u8 = "",
+
         fn app(self: *@This()) App {
-            return .{ .context = self, .name = "view-bridge", .source = platform.WebViewSource.html("<p>Views</p>") };
+            return .{ .context = self, .name = "view-bridge", .source = platform.WebViewSource.html("<p>Views</p>"), .event_fn = event };
+        }
+
+        fn event(context: *anyopaque, runtime: *Runtime, event_value: Event) anyerror!void {
+            _ = runtime;
+            const self: *@This() = @ptrCast(@alignCast(context));
+            switch (event_value) {
+                .command => |command| {
+                    self.command_count += 1;
+                    self.last_command = command.name;
+                    self.last_source = command.source;
+                    self.last_view_label = command.view_label;
+                },
+                else => {},
+            }
         }
     };
 
@@ -4670,14 +4689,26 @@ test "runtime handles built-in JavaScript view bridge commands" {
     try harness.start(app_state.app());
 
     try harness.runtime.dispatchPlatformEvent(app_state.app(), .{ .bridge_message = .{
-        .bytes = "{\"id\":\"1\",\"command\":\"zero-native.view.create\",\"payload\":{\"label\":\"toolbar\",\"kind\":\"toolbar\",\"frame\":{\"x\":0,\"y\":0,\"width\":640,\"height\":44},\"role\":\"toolbar\",\"text\":\"Tools\",\"layer\":3}}",
+        .bytes = "{\"id\":\"1\",\"command\":\"zero-native.view.create\",\"payload\":{\"label\":\"toolbar\",\"kind\":\"toolbar\",\"frame\":{\"x\":0,\"y\":0,\"width\":640,\"height\":44},\"role\":\"toolbar\",\"text\":\"Tools\",\"command\":\"app.tools\",\"layer\":3}}",
         .origin = "zero://inline",
         .window_id = 1,
     } });
     try std.testing.expect(std.mem.indexOf(u8, harness.null_platform.lastBridgeResponse(), "\"ok\":true") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness.null_platform.lastBridgeResponse(), "\"kind\":\"toolbar\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness.null_platform.lastBridgeResponse(), "\"text\":\"Tools\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness.null_platform.lastBridgeResponse(), "\"command\":\"app.tools\"") != null);
     try std.testing.expectEqual(@as(usize, 1), harness.runtime.view_count);
+    try std.testing.expectEqualStrings("app.tools", harness.null_platform.views[0].command);
+
+    try harness.runtime.dispatchPlatformEvent(app_state.app(), .{ .native_command = .{
+        .name = "app.tools",
+        .window_id = 1,
+        .view_label = "toolbar",
+    } });
+    try std.testing.expectEqual(@as(u32, 1), app_state.command_count);
+    try std.testing.expectEqualStrings("app.tools", app_state.last_command);
+    try std.testing.expectEqual(CommandSource.toolbar, app_state.last_source);
+    try std.testing.expectEqualStrings("toolbar", app_state.last_view_label);
 
     try harness.runtime.dispatchPlatformEvent(app_state.app(), .{ .bridge_message = .{
         .bytes = "{\"id\":\"2\",\"command\":\"zero-native.view.list\",\"payload\":{}}",
@@ -4710,13 +4741,15 @@ test "runtime handles built-in JavaScript view bridge commands" {
     try std.testing.expect(std.mem.indexOf(u8, harness.null_platform.lastBridgeResponse(), "\"visible\":false") != null);
 
     try harness.runtime.dispatchPlatformEvent(app_state.app(), .{ .bridge_message = .{
-        .bytes = "{\"id\":\"6\",\"command\":\"zero-native.view.update\",\"payload\":{\"label\":\"toolbar\",\"visible\":true,\"enabled\":false,\"role\":\"banner\",\"text\":\"Actions\"}}",
+        .bytes = "{\"id\":\"6\",\"command\":\"zero-native.view.update\",\"payload\":{\"label\":\"toolbar\",\"visible\":true,\"enabled\":false,\"role\":\"banner\",\"text\":\"Actions\",\"command\":\"app.actions\"}}",
         .origin = "zero://inline",
         .window_id = 1,
     } });
     try std.testing.expect(std.mem.indexOf(u8, harness.null_platform.lastBridgeResponse(), "\"enabled\":false") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness.null_platform.lastBridgeResponse(), "\"role\":\"banner\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness.null_platform.lastBridgeResponse(), "\"text\":\"Actions\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness.null_platform.lastBridgeResponse(), "\"command\":\"app.actions\"") != null);
+    try std.testing.expectEqualStrings("app.actions", harness.null_platform.views[0].command);
 
     try harness.runtime.dispatchPlatformEvent(app_state.app(), .{ .bridge_message = .{
         .bytes = "{\"id\":\"7\",\"command\":\"zero-native.view.close\",\"payload\":{\"label\":\"toolbar\"}}",
