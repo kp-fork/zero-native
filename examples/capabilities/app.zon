@@ -1,0 +1,34 @@
+.{
+    .id = "dev.zero_native.capabilities",
+    .name = "capabilities",
+    .display_name = "Capabilities",
+    .version = "0.1.0",
+    .icons = .{ "assets/icon.icns" },
+    .platforms = .{ "macos", "linux" },
+    .permissions = .{ "notifications", "clipboard", "credentials" },
+    .capabilities = .{ "webview", "js_bridge", "notifications", "clipboard", "credentials" },
+    .shell = .{
+        .windows = .{
+            .{
+                .label = "main",
+                .title = "zero-native Capabilities",
+                .width = 900,
+                .height = 620,
+                .restore_policy = "center_on_primary",
+                .views = .{
+                    .{ .label = "main", .kind = "webview", .url = "zero://inline", .fill = true },
+                    .{ .label = "statusbar", .kind = "statusbar", .edge = "bottom", .height = 34, .role = "Status" },
+                    .{ .label = "status-label", .kind = "label", .parent = "statusbar", .x = 14, .y = 8, .width = 640, .height = 18, .text = "Ready." },
+                },
+            },
+        },
+    },
+    .security = .{
+        .navigation = .{
+            .allowed_origins = .{ "zero://app", "zero://inline" },
+            .external_links = .{ .action = "deny" },
+        },
+    },
+    .web_engine = "system",
+    .cef = .{ .dir = "third_party/cef/macos", .auto_install = false },
+}
