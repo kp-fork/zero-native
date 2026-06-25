@@ -37,6 +37,8 @@ enum EventKind {
     kWindowFrame = 4,
     kShortcut = 5,
     kNativeCommand = 6,
+    kAppActivated = 7,
+    kAppDeactivated = 8,
 };
 
 constexpr uint32_t kShortcutModifierPrimary = 1u << 0;
@@ -172,6 +174,7 @@ struct Host {
     std::vector<std::string> allowed_external_urls;
     std::vector<Shortcut> shortcuts;
     int external_link_action = 0;
+    bool app_active = false;
     std::shared_ptr<HostLifetime> lifetime = std::make_shared<HostLifetime>();
 };
 
@@ -920,6 +923,20 @@ static LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wparam, LPARA
             break;
         case WM_COMMAND:
             if (host && lparam != 0 && emitNativeCommandForHwnd(host, reinterpret_cast<HWND>(lparam), HIWORD(wparam))) return 0;
+            break;
+        case WM_ACTIVATEAPP:
+            if (host) {
+                bool active = wparam != FALSE;
+                if (host->app_active != active) {
+                    host->app_active = active;
+                    for (auto &entry : host->windows) {
+                        if (entry.second.hwnd == hwnd) {
+                            emit(host, entry.second, active ? kAppActivated : kAppDeactivated);
+                            break;
+                        }
+                    }
+                }
+            }
             break;
         case WM_SIZE:
             if (host) {
