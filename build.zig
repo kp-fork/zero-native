@@ -267,6 +267,13 @@ pub fn build(b: *std.Build) void {
         .{ .path = "src/platform/windows/webview2_host.cpp", .pattern = "bridgeOriginForWebViewUrl(source_webview->second, source_url)" },
         .{ .path = "src/platform/windows/webview2_host.cpp", .pattern = "webview.spa_fallback = spa_fallback != 0;" },
     });
+    addFileContainsCheckStep(b, test_step, "test-macos-cef-packaged-assets-webviews", "Verify macOS CEF child WebViews resolve packaged asset URLs before loading", &.{
+        .{ .path = "src/platform/macos/cef_host.mm", .pattern = "self.assetRoots = [[NSMutableDictionary alloc] init];" },
+        .{ .path = "src/platform/macos/cef_host.mm", .pattern = "resolvedWebViewURLString:(NSString *)url windowId:(uint64_t)windowId" },
+        .{ .path = "src/platform/macos/cef_host.mm", .pattern = "CefBrowserHost::CreateBrowser(windowInfo, client.get(), std::string(resolvedURL.UTF8String)" },
+        .{ .path = "src/platform/macos/cef_host.mm", .pattern = "self.webviewPendingURLs[[self webViewKeyForWindow:windowId label:label]] = resolvedURL;" },
+        .{ .path = "src/platform/macos/cef_host.mm", .pattern = "bridgeOriginForWindowId:window_id_ webViewLabel:labelString sourceURL:sourceURLString" },
+    });
     addFileContainsCheckStep(b, test_step, "test-appkit-native-accessibility-roles", "Verify AppKit native views publish accessibility roles", &.{
         .{ .path = "src/platform/macos/appkit_host.m", .pattern = "ZeroNativeAccessibilityRoleForNativeViewKind" },
         .{ .path = "src/platform/macos/appkit_host.m", .pattern = "NSAccessibilityToolbarRole" },

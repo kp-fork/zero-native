@@ -45,6 +45,7 @@ static const char *ZeroNativeCefBridgeScript();
 static NSRect ZeroNativeConstrainFrame(NSRect frame);
 static NSString *ZeroNativeResolvedAssetRoot(NSString *rootPath);
 static NSURL *ZeroNativeAssetEntryFileURL(NSString *rootPath, NSString *entryPath);
+static NSString *ZeroNativeSafeAssetPath(NSURL *url, NSString *entryPath);
 static NSArray<NSString *> *ZeroNativePolicyListFromBytes(const char *bytes, size_t len, NSArray<NSString *> *fallback);
 static NSString *ZeroNativeAbsolutePath(NSString *path);
 static NSString *ZeroNativeExistingPath(NSString *path);
@@ -265,6 +266,27 @@ static NSURL *ZeroNativeAssetEntryFileURL(NSString *rootPath, NSString *entryPat
     return [NSURL fileURLWithPath:[ZeroNativeResolvedAssetRoot(rootPath ?: @"") stringByAppendingPathComponent:entry]];
 }
 
+static BOOL ZeroNativePathHasUnsafeSegment(NSString *path) {
+    for (NSString *segment in [path componentsSeparatedByString:@"/"]) {
+        if (segment.length == 0) continue;
+        if ([segment isEqualToString:@"."] || [segment isEqualToString:@".."]) return YES;
+        if ([segment containsString:@"\\"]) return YES;
+    }
+    return NO;
+}
+
+static NSString *ZeroNativeSafeAssetPath(NSURL *url, NSString *entryPath) {
+    if (!url) return nil;
+    NSString *path = url.path.stringByRemovingPercentEncoding ?: url.path;
+    if (path.length == 0 || [path isEqualToString:@"/"]) return entryPath.length > 0 ? entryPath : @"index.html";
+    while ([path hasPrefix:@"/"]) {
+        path = [path substringFromIndex:1];
+    }
+    if (path.length == 0) return entryPath.length > 0 ? entryPath : @"index.html";
+    if (ZeroNativePathHasUnsafeSegment(path)) return nil;
+    return path;
+}
+
 static NSString *ZeroNativeAbsolutePath(NSString *path) {
     if (path.length == 0) return [[NSFileManager defaultManager] currentDirectoryPath];
     if (path.isAbsolutePath) return path;
@@ -460,6 +482,9 @@ static const char *ZeroNativeCefBridgeScript() {
 @property(nonatomic, strong) NSMutableDictionary<NSNumber *, ZeroNativeChromiumWindowDelegate *> *delegates;
 @property(nonatomic, strong) NSMutableDictionary<NSNumber *, NSString *> *bridgeOrigins;
 @property(nonatomic, strong) NSMutableDictionary<NSNumber *, NSString *> *internalURLPrefixes;
+@property(nonatomic, strong) NSMutableDictionary<NSNumber *, NSString *> *assetRoots;
+@property(nonatomic, strong) NSMutableDictionary<NSNumber *, NSString *> *assetEntries;
+@property(nonatomic, strong) NSMutableDictionary<NSNumber *, NSString *> *assetOrigins;
 @property(nonatomic, strong) NSMutableDictionary<NSNumber *, NSString *> *windowLabels;
 @property(nonatomic, strong) NSMutableDictionary<NSNumber *, NSString *> *fallbackURLs;
 @property(nonatomic, strong) NSMutableDictionary<NSString *, NSView *> *webviewViews;
@@ -513,8 +538,10 @@ static const char *ZeroNativeCefBridgeScript() {
 - (void)loadSource:(NSString *)source kind:(NSInteger)kind assetRoot:(NSString *)assetRoot entry:(NSString *)entry origin:(NSString *)origin spaFallback:(BOOL)spaFallback windowId:(uint64_t)windowId;
 - (void)setAllowedNavigationOrigins:(NSArray<NSString *> *)origins externalURLs:(NSArray<NSString *> *)externalURLs externalAction:(NSInteger)externalAction;
 - (BOOL)isInternalURL:(NSURL *)url;
+- (BOOL)isInternalURL:(NSURL *)url windowId:(uint64_t)windowId;
 - (BOOL)allowsNavigationURL:(NSURL *)url;
 - (BOOL)openExternalURLIfAllowed:(NSURL *)url;
+- (NSString *)resolvedWebViewURLString:(NSString *)url windowId:(uint64_t)windowId;
 - (BOOL)createWebViewInWindow:(uint64_t)windowId label:(NSString *)label url:(NSString *)url x:(double)x y:(double)y width:(double)width height:(double)height layer:(NSInteger)layer transparent:(BOOL)transparent bridgeEnabled:(BOOL)bridgeEnabled;
 - (BOOL)setWebViewFrameInWindow:(uint64_t)windowId label:(NSString *)label x:(double)x y:(double)y width:(double)width height:(double)height;
 - (BOOL)navigateWebViewInWindow:(uint64_t)windowId label:(NSString *)label url:(NSString *)url;
@@ -530,7 +557,7 @@ static const char *ZeroNativeCefBridgeScript() {
 - (void)cleanupClosedWebViewWithKey:(NSString *)key;
 - (void)cleanupClosedWebViewWithKey:(NSString *)key generation:(uint64_t)generation;
 - (NSString *)fallbackURLForWindowId:(uint64_t)windowId;
-- (NSString *)bridgeOriginForWindowId:(uint64_t)windowId sourceURL:(NSString *)sourceURL;
+- (NSString *)bridgeOriginForWindowId:(uint64_t)windowId webViewLabel:(NSString *)webViewLabel sourceURL:(NSString *)sourceURL;
 - (void)receiveBridgePayload:(NSString *)payload origin:(NSString *)origin windowId:(uint64_t)windowId webViewLabel:(NSString *)webViewLabel;
 - (void)completeBridgeWithResponse:(NSString *)response;
 - (void)completeBridgeWithResponse:(NSString *)response windowId:(uint64_t)windowId;
@@ -573,6 +600,9 @@ static const char *ZeroNativeCefBridgeScript() {
     [self.host.delegates removeObjectForKey:key];
     [self.host.bridgeOrigins removeObjectForKey:key];
     [self.host.internalURLPrefixes removeObjectForKey:key];
+    [self.host.assetRoots removeObjectForKey:key];
+    [self.host.assetEntries removeObjectForKey:key];
+    [self.host.assetOrigins removeObjectForKey:key];
     [self.host.windowLabels removeObjectForKey:key];
     [self.host.fallbackURLs removeObjectForKey:key];
     if (self.host.browsers) self.host.browsers->erase(self.windowId);
@@ -601,6 +631,9 @@ static const char *ZeroNativeCefBridgeScript() {
     self.delegates = [[NSMutableDictionary alloc] init];
     self.bridgeOrigins = [[NSMutableDictionary alloc] init];
     self.internalURLPrefixes = [[NSMutableDictionary alloc] init];
+    self.assetRoots = [[NSMutableDictionary alloc] init];
+    self.assetEntries = [[NSMutableDictionary alloc] init];
+    self.assetOrigins = [[NSMutableDictionary alloc] init];
     self.windowLabels = [[NSMutableDictionary alloc] init];
     self.fallbackURLs = [[NSMutableDictionary alloc] init];
     self.webviewViews = [[NSMutableDictionary alloc] init];
@@ -940,6 +973,7 @@ static const char *ZeroNativeCefBridgeScript() {
     NSString *urlString = source;
     NSString *bridgeOrigin = nil;
     NSString *internalURLPrefix = nil;
+    NSString *assetEntryPath = nil;
     if (kind == 0) {
         urlString = temporaryHtmlUrl(source);
         bridgeOrigin = @"zero://inline";
@@ -950,6 +984,8 @@ static const char *ZeroNativeCefBridgeScript() {
         while ([assetEntry hasPrefix:@"/"]) {
             assetEntry = [assetEntry substringFromIndex:1];
         }
+        if (assetEntry.length == 0) assetEntry = @"index.html";
+        assetEntryPath = assetEntry;
         urlString = [NSURL fileURLWithPath:[resolvedRoot stringByAppendingPathComponent:assetEntry]].absoluteString;
         bridgeOrigin = origin.length > 0 ? origin : @"zero://app";
         internalURLPrefix = [NSURL fileURLWithPath:resolvedRoot isDirectory:YES].absoluteString;
@@ -964,6 +1000,15 @@ static const char *ZeroNativeCefBridgeScript() {
         self.internalURLPrefixes[key] = internalURLPrefix;
     } else {
         [self.internalURLPrefixes removeObjectForKey:key];
+    }
+    if (kind == 2) {
+        self.assetRoots[key] = ZeroNativeResolvedAssetRoot(assetRoot ?: @"");
+        self.assetEntries[key] = assetEntryPath.length > 0 ? assetEntryPath : @"index.html";
+        self.assetOrigins[key] = bridgeOrigin.length > 0 ? bridgeOrigin : @"zero://app";
+    } else {
+        [self.assetRoots removeObjectForKey:key];
+        [self.assetEntries removeObjectForKey:key];
+        [self.assetOrigins removeObjectForKey:key];
     }
     if (kind == 2 && spaFallback) {
         self.fallbackURLs[key] = urlString;
@@ -1010,6 +1055,8 @@ static const char *ZeroNativeCefBridgeScript() {
     if (!container || !stackView) return NO;
     NSURL *targetURL = [NSURL URLWithString:url];
     if (!targetURL || ![self allowsNavigationURL:targetURL]) return NO;
+    NSString *resolvedURL = [self resolvedWebViewURLString:url windowId:windowId];
+    if (resolvedURL.length == 0) return NO;
     NSString *key = [self webViewKeyForWindow:windowId label:label];
     if (self.webviewViews[key]) return NO;
 
@@ -1033,7 +1080,7 @@ static const char *ZeroNativeCefBridgeScript() {
     CefRect rect(0, 0, webview.bounds.size.width, webview.bounds.size.height);
     windowInfo.SetAsChild((__bridge void *)webview, rect);
     CefBrowserSettings browserSettings;
-    CefBrowserHost::CreateBrowser(windowInfo, client.get(), std::string(url.UTF8String), browserSettings, ZeroNativeCefExtraInfo(bridgeEnabled), nullptr);
+    CefBrowserHost::CreateBrowser(windowInfo, client.get(), std::string(resolvedURL.UTF8String), browserSettings, ZeroNativeCefExtraInfo(bridgeEnabled), nullptr);
     return YES;
 }
 
@@ -1070,11 +1117,13 @@ static const char *ZeroNativeCefBridgeScript() {
     if (label.length == 0 || url.length == 0) return NO;
     NSURL *targetURL = [NSURL URLWithString:url];
     if (!targetURL || ![self allowsNavigationURL:targetURL]) return NO;
+    NSString *resolvedURL = [self resolvedWebViewURLString:url windowId:windowId];
+    if (resolvedURL.length == 0) return NO;
     if ([label isEqualToString:@"main"]) {
         if (self.browsers) {
             auto it = self.browsers->find(windowId);
             if (it != self.browsers->end() && it->second) {
-                it->second->GetMainFrame()->LoadURL(std::string(url.UTF8String));
+                it->second->GetMainFrame()->LoadURL(std::string(resolvedURL.UTF8String));
                 return YES;
             }
         }
@@ -1086,11 +1135,11 @@ static const char *ZeroNativeCefBridgeScript() {
     if (self.webviewBrowsers) {
         auto it = self.webviewBrowsers->find(keyString);
         if (it != self.webviewBrowsers->end() && it->second) {
-            it->second->GetMainFrame()->LoadURL(std::string(url.UTF8String));
+            it->second->GetMainFrame()->LoadURL(std::string(resolvedURL.UTF8String));
             return YES;
         }
     }
-    self.webviewPendingURLs[[self webViewKeyForWindow:windowId label:label]] = url;
+    self.webviewPendingURLs[[self webViewKeyForWindow:windowId label:label]] = resolvedURL;
     return YES;
 }
 
@@ -1226,6 +1275,12 @@ static const char *ZeroNativeCefBridgeScript() {
     return NO;
 }
 
+- (BOOL)isInternalURL:(NSURL *)url windowId:(uint64_t)windowId {
+    NSString *prefix = self.internalURLPrefixes[@(windowId)];
+    NSString *absolute = url.absoluteString ?: @"";
+    return prefix.length > 0 && [absolute hasPrefix:prefix];
+}
+
 - (BOOL)allowsNavigationURL:(NSURL *)url {
     if (!url) return YES;
     NSString *scheme = url.scheme.lowercaseString ?: @"";
@@ -1239,6 +1294,25 @@ static const char *ZeroNativeCefBridgeScript() {
     if (!ZeroNativePolicyListMatches(self.allowedExternalURLs, url)) return NO;
     [[NSWorkspace sharedWorkspace] openURL:url];
     return YES;
+}
+
+- (NSString *)resolvedWebViewURLString:(NSString *)url windowId:(uint64_t)windowId {
+    NSURL *targetURL = [NSURL URLWithString:url ?: @""];
+    if (!targetURL) return nil;
+    NSNumber *key = @(windowId);
+    NSString *assetOrigin = self.assetOrigins[key];
+    NSString *assetRoot = self.assetRoots[key];
+    NSString *assetEntry = self.assetEntries[key];
+    if (assetOrigin.length == 0 || assetRoot.length == 0) return url;
+    if (![ZeroNativeOriginForURL(targetURL) isEqualToString:assetOrigin]) return url;
+
+    NSString *relativePath = ZeroNativeSafeAssetPath(targetURL, assetEntry.length > 0 ? assetEntry : @"index.html");
+    if (!relativePath) return nil;
+    NSURL *fileURL = [NSURL fileURLWithPath:[assetRoot stringByAppendingPathComponent:relativePath]];
+    NSURLComponents *components = [NSURLComponents componentsWithURL:fileURL resolvingAgainstBaseURL:NO];
+    components.query = targetURL.query;
+    components.fragment = targetURL.fragment;
+    return components.URL.absoluteString ?: fileURL.absoluteString;
 }
 
 - (void)setBrowser:(CefRefPtr<CefBrowser>)browser windowId:(uint64_t)windowId {
@@ -1292,10 +1366,17 @@ static const char *ZeroNativeCefBridgeScript() {
     return self.fallbackURLs[@(windowId)];
 }
 
-- (NSString *)bridgeOriginForWindowId:(uint64_t)windowId sourceURL:(NSString *)sourceURL {
-    NSString *origin = self.bridgeOrigins[@(windowId)];
-    if (origin.length > 0) return origin;
-    return ZeroNativeOriginForURL([NSURL URLWithString:sourceURL]);
+- (NSString *)bridgeOriginForWindowId:(uint64_t)windowId webViewLabel:(NSString *)webViewLabel sourceURL:(NSString *)sourceURL {
+    NSURL *url = [NSURL URLWithString:sourceURL ?: @""];
+    NSString *label = webViewLabel.length > 0 ? webViewLabel : @"main";
+    NSString *assetOrigin = self.assetOrigins[@(windowId)];
+    if ([label isEqualToString:@"main"]) {
+        NSString *origin = self.bridgeOrigins[@(windowId)];
+        if (origin.length > 0) return origin;
+    } else if (assetOrigin.length > 0 && [self isInternalURL:url windowId:windowId]) {
+        return assetOrigin;
+    }
+    return ZeroNativeOriginForURL(url);
 }
 
 - (void)receiveBridgePayload:(NSString *)payload origin:(NSString *)origin windowId:(uint64_t)windowId webViewLabel:(NSString *)webViewLabel {
@@ -1568,9 +1649,7 @@ bool ZeroNativeCefClient::OnProcessMessageReceived(CefRefPtr<CefBrowser> browser
     NSString *payloadString = [[NSString alloc] initWithBytes:payload.data() length:payload.size() encoding:NSUTF8StringEncoding] ?: @"{}";
     NSString *sourceURLString = [[NSString alloc] initWithBytes:source_url.data() length:source_url.size() encoding:NSUTF8StringEncoding] ?: @"";
     NSString *labelString = [[NSString alloc] initWithBytes:label.data() length:label.size() encoding:NSUTF8StringEncoding] ?: @"main";
-    NSString *originString = [labelString isEqualToString:@"main"]
-        ? [host_ bridgeOriginForWindowId:window_id_ sourceURL:sourceURLString]
-        : ZeroNativeOriginForURL([NSURL URLWithString:sourceURLString]);
+    NSString *originString = [host_ bridgeOriginForWindowId:window_id_ webViewLabel:labelString sourceURL:sourceURLString];
     [host_ receiveBridgePayload:payloadString origin:originString windowId:window_id_ webViewLabel:labelString];
     return true;
 }
