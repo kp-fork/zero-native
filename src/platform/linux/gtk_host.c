@@ -10,6 +10,7 @@
 #define ZERO_NATIVE_MAX_WEBVIEWS 16
 #define ZERO_NATIVE_MAX_NATIVE_VIEWS 32
 #define ZERO_NATIVE_MAX_SHORTCUTS 64
+#define ZERO_NATIVE_MAX_MENU_ITEMS 128
 
 #define ZERO_NATIVE_SHORTCUT_MODIFIER_PRIMARY (1u << 0)
 #define ZERO_NATIVE_SHORTCUT_MODIFIER_COMMAND (1u << 1)
@@ -39,6 +40,12 @@ typedef struct zero_native_gtk_shortcut {
     char *key;
     uint32_t modifiers;
 } zero_native_gtk_shortcut_t;
+
+typedef struct zero_native_gtk_menu_action {
+    char *name;
+    char *command;
+    struct zero_native_gtk_host *host;
+} zero_native_gtk_menu_action_t;
 
 typedef struct zero_native_gtk_webview {
     char *label;
@@ -77,6 +84,8 @@ typedef struct zero_native_gtk_window {
     uint64_t id;
     GtkWindow *gtk_window;
     WebKitWebView *web_view;
+    GtkWidget *root_box;
+    GtkWidget *menu_bar;
     GtkWidget *stack_root;
     WebKitUserContentManager *content_manager;
     struct zero_native_gtk_host *host;
@@ -124,6 +133,9 @@ struct zero_native_gtk_host {
     int scheme_registered;
     zero_native_gtk_shortcut_t shortcuts[ZERO_NATIVE_MAX_SHORTCUTS];
     int shortcut_count;
+    GMenuModel *menu_model;
+    zero_native_gtk_menu_action_t menu_actions[ZERO_NATIVE_MAX_MENU_ITEMS];
+    int menu_action_count;
 };
 
 static void zero_native_emit(zero_native_gtk_host_t *host, zero_native_gtk_event_t event);
@@ -185,6 +197,24 @@ static void zero_native_clear_shortcuts(zero_native_gtk_host_t *host) {
         memset(&host->shortcuts[i], 0, sizeof(host->shortcuts[i]));
     }
     host->shortcut_count = 0;
+}
+
+static void zero_native_clear_menu_actions(zero_native_gtk_host_t *host) {
+    if (!host) return;
+    const char *empty_accels[] = { NULL };
+    for (int i = 0; i < host->menu_action_count; i++) {
+        zero_native_gtk_menu_action_t *action = &host->menu_actions[i];
+        if (action->name && host->app) {
+            char *detailed = g_strdup_printf("app.%s", action->name);
+            gtk_application_set_accels_for_action(host->app, detailed, empty_accels);
+            g_free(detailed);
+            g_action_map_remove_action(G_ACTION_MAP(host->app), action->name);
+        }
+        g_free(action->name);
+        free(action->command);
+        memset(action, 0, sizeof(*action));
+    }
+    host->menu_action_count = 0;
 }
 
 static void zero_native_clear_window_source(zero_native_gtk_window_t *win) {
@@ -788,6 +818,73 @@ static void zero_native_emit(zero_native_gtk_host_t *host, zero_native_gtk_event
     if (host->callback) host->callback(host->callback_context, &event);
 }
 
+static uint64_t zero_native_active_window_id(zero_native_gtk_host_t *host) {
+    if (!host) return 1;
+    GtkWindow *active = host->app ? gtk_application_get_active_window(host->app) : NULL;
+    if (active) {
+        for (int i = 0; i < host->window_count; i++) {
+            if (host->windows[i].gtk_window == active) return host->windows[i].id;
+        }
+    }
+    for (int i = 0; i < host->window_count; i++) {
+        if (host->windows[i].gtk_window) return host->windows[i].id;
+    }
+    return 1;
+}
+
+static void zero_native_menu_action_activate(GSimpleAction *action, GVariant *parameter, gpointer data) {
+    (void)action;
+    (void)parameter;
+    zero_native_gtk_menu_action_t *menu_action = data;
+    if (!menu_action || !menu_action->host || !menu_action->command || !menu_action->command[0]) return;
+    zero_native_emit(menu_action->host, (zero_native_gtk_event_t){
+        .kind = ZERO_NATIVE_GTK_EVENT_MENU_COMMAND,
+        .window_id = zero_native_active_window_id(menu_action->host),
+        .command_name = menu_action->command,
+        .command_name_len = strlen(menu_action->command),
+    });
+}
+
+static void zero_native_apply_menu_model_to_window(zero_native_gtk_host_t *host, zero_native_gtk_window_t *win) {
+    if (!host || !win || !win->menu_bar) return;
+    gtk_popover_menu_bar_set_menu_model(GTK_POPOVER_MENU_BAR(win->menu_bar), host->menu_model);
+    gtk_widget_set_visible(win->menu_bar, host->menu_model != NULL);
+}
+
+static const char *zero_native_accel_key_name(const char *key) {
+    if (!key || !key[0]) return "";
+    if (strcmp(key, "escape") == 0) return "Escape";
+    if (strcmp(key, "enter") == 0) return "Return";
+    if (strcmp(key, "tab") == 0) return "Tab";
+    if (strcmp(key, "space") == 0) return "space";
+    if (strcmp(key, "backspace") == 0) return "BackSpace";
+    if (strcmp(key, "arrowleft") == 0) return "Left";
+    if (strcmp(key, "arrowright") == 0) return "Right";
+    if (strcmp(key, "arrowup") == 0) return "Up";
+    if (strcmp(key, "arrowdown") == 0) return "Down";
+    return key;
+}
+
+static char *zero_native_menu_accel(const char *key, uint32_t modifiers) {
+    if (!key || !key[0]) return NULL;
+    GString *accel = g_string_new("");
+    if ((modifiers & ZERO_NATIVE_SHORTCUT_MODIFIER_PRIMARY) != 0 || (modifiers & ZERO_NATIVE_SHORTCUT_MODIFIER_CONTROL) != 0) g_string_append(accel, "<Control>");
+    if ((modifiers & ZERO_NATIVE_SHORTCUT_MODIFIER_COMMAND) != 0) g_string_append(accel, "<Super>");
+    if ((modifiers & ZERO_NATIVE_SHORTCUT_MODIFIER_OPTION) != 0) g_string_append(accel, "<Alt>");
+    if ((modifiers & ZERO_NATIVE_SHORTCUT_MODIFIER_SHIFT) != 0) g_string_append(accel, "<Shift>");
+    g_string_append(accel, zero_native_accel_key_name(key));
+    return g_string_free(accel, FALSE);
+}
+
+static void zero_native_append_menu_section(GMenu *menu, GMenu **section) {
+    if (!menu || !section || !*section) return;
+    if (g_menu_model_get_n_items(G_MENU_MODEL(*section)) > 0) {
+        g_menu_append_section(menu, NULL, G_MENU_MODEL(*section));
+    }
+    g_object_unref(*section);
+    *section = g_menu_new();
+}
+
 static int zero_native_any_window_active(zero_native_gtk_host_t *host) {
     if (!host) return 0;
     for (int i = 0; i < host->window_count; i++) {
@@ -1169,9 +1266,17 @@ static zero_native_gtk_window_t *zero_native_create_window_internal(zero_native_
     }
     zero_native_setup_bridge(win);
 
+    win->root_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+    win->menu_bar = gtk_popover_menu_bar_new_from_model(host->menu_model);
+    gtk_widget_set_visible(win->menu_bar, host->menu_model != NULL);
+    gtk_box_append(GTK_BOX(win->root_box), win->menu_bar);
+
     win->stack_root = gtk_overlay_new();
+    gtk_widget_set_hexpand(win->stack_root, TRUE);
+    gtk_widget_set_vexpand(win->stack_root, TRUE);
     gtk_overlay_set_child(GTK_OVERLAY(win->stack_root), GTK_WIDGET(wv));
-    gtk_window_set_child(win->gtk_window, win->stack_root);
+    gtk_box_append(GTK_BOX(win->root_box), win->stack_root);
+    gtk_window_set_child(win->gtk_window, win->root_box);
 
     g_signal_connect(win->gtk_window, "notify::default-width", G_CALLBACK(on_resize), win);
     g_signal_connect(win->gtk_window, "notify::default-height", G_CALLBACK(on_resize), win);
@@ -1256,6 +1361,8 @@ void zero_native_gtk_destroy(zero_native_gtk_host_t *host) {
     zero_native_free_string_list(host->allowed_origins, host->allowed_origins_count);
     zero_native_free_string_list(host->allowed_external_urls, host->allowed_external_urls_count);
     zero_native_clear_shortcuts(host);
+    zero_native_clear_menu_actions(host);
+    if (host->menu_model) g_object_unref(host->menu_model);
     free(host);
 }
 
@@ -1404,6 +1511,97 @@ void zero_native_gtk_set_security_policy(zero_native_gtk_host_t *host, const cha
     host->allowed_origins = zero_native_parse_newline_list(allowed_origins, allowed_origins_len, &host->allowed_origins_count);
     host->allowed_external_urls = zero_native_parse_newline_list(external_urls, external_urls_len, &host->allowed_external_urls_count);
     host->external_link_action = external_action;
+}
+
+void zero_native_gtk_set_menus(zero_native_gtk_host_t *host, const char *const *menu_titles, const size_t *menu_title_lens, size_t menu_count, const uint32_t *item_menu_indices, const char *const *item_labels, const size_t *item_label_lens, const char *const *item_commands, const size_t *item_command_lens, const char *const *item_keys, const size_t *item_key_lens, const uint32_t *item_modifiers, const int *item_separators, const int *item_enabled, const int *item_checked, size_t item_count) {
+    if (!host) return;
+    zero_native_clear_menu_actions(host);
+    if (host->menu_model) {
+        g_object_unref(host->menu_model);
+        host->menu_model = NULL;
+    }
+
+    if (menu_count == 0) {
+        for (int i = 0; i < host->window_count; i++) zero_native_apply_menu_model_to_window(host, &host->windows[i]);
+        return;
+    }
+    if (!menu_titles || !menu_title_lens) return;
+    if (item_count > 0 && (!item_menu_indices || !item_labels || !item_label_lens || !item_commands || !item_command_lens || !item_keys || !item_key_lens || !item_modifiers || !item_separators || !item_enabled || !item_checked)) return;
+
+    GMenu *menubar = g_menu_new();
+    for (size_t menu_index = 0; menu_index < menu_count; menu_index++) {
+        char *title = zero_native_strndup(menu_titles[menu_index], menu_title_lens[menu_index]);
+        if (!title) continue;
+        GMenu *menu = g_menu_new();
+        GMenu *section = g_menu_new();
+
+        for (size_t item_index = 0; item_index < item_count; item_index++) {
+            if (item_menu_indices[item_index] != menu_index) continue;
+            if (item_separators[item_index]) {
+                zero_native_append_menu_section(menu, &section);
+                continue;
+            }
+            if (host->menu_action_count >= ZERO_NATIVE_MAX_MENU_ITEMS) continue;
+
+            char *label = zero_native_strndup(item_labels[item_index], item_label_lens[item_index]);
+            char *command = zero_native_strndup(item_commands[item_index], item_command_lens[item_index]);
+            char *key = zero_native_strndup(item_keys[item_index], item_key_lens[item_index]);
+            if (!label || !command || !key) {
+                free(label);
+                free(command);
+                free(key);
+                continue;
+            }
+
+            zero_native_gtk_menu_action_t *menu_action = &host->menu_actions[host->menu_action_count];
+            memset(menu_action, 0, sizeof(*menu_action));
+            menu_action->name = g_strdup_printf("zn-menu-%d", host->menu_action_count + 1);
+            menu_action->command = command;
+            menu_action->host = host;
+            if (!menu_action->name || !menu_action->command) {
+                g_free(menu_action->name);
+                free(menu_action->command);
+                memset(menu_action, 0, sizeof(*menu_action));
+                free(label);
+                free(key);
+                continue;
+            }
+
+            GSimpleAction *action = item_checked[item_index]
+                ? g_simple_action_new_stateful(menu_action->name, NULL, g_variant_new_boolean(TRUE))
+                : g_simple_action_new(menu_action->name, NULL);
+            g_simple_action_set_enabled(action, item_enabled[item_index] != 0);
+            g_signal_connect(action, "activate", G_CALLBACK(zero_native_menu_action_activate), menu_action);
+            g_action_map_add_action(G_ACTION_MAP(host->app), G_ACTION(action));
+            g_object_unref(action);
+
+            char *detailed = g_strdup_printf("app.%s", menu_action->name);
+            GMenuItem *gitem = g_menu_item_new(label, detailed);
+            if (item_checked[item_index]) g_menu_item_set_attribute(gitem, "toggle-type", "s", "check");
+            g_menu_append_item(section, gitem);
+            g_object_unref(gitem);
+
+            char *accel = zero_native_menu_accel(key, item_modifiers[item_index]);
+            if (accel && accel[0]) {
+                const char *accels[] = { accel, NULL };
+                gtk_application_set_accels_for_action(host->app, detailed, accels);
+            }
+            g_free(detailed);
+            g_free(accel);
+            free(label);
+            free(key);
+            host->menu_action_count++;
+        }
+
+        zero_native_append_menu_section(menu, &section);
+        g_object_unref(section);
+        g_menu_append_submenu(menubar, title, G_MENU_MODEL(menu));
+        g_object_unref(menu);
+        free(title);
+    }
+
+    host->menu_model = G_MENU_MODEL(menubar);
+    for (int i = 0; i < host->window_count; i++) zero_native_apply_menu_model_to_window(host, &host->windows[i]);
 }
 
 void zero_native_gtk_set_shortcuts(zero_native_gtk_host_t *host, const char *const *ids, const size_t *id_lens, const char *const *keys, const size_t *key_lens, const uint32_t *modifiers, size_t count) {

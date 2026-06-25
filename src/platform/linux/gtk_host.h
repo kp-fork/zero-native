@@ -20,6 +20,7 @@ typedef enum {
     ZERO_NATIVE_GTK_EVENT_NATIVE_COMMAND = 6,
     ZERO_NATIVE_GTK_EVENT_APP_ACTIVATED = 7,
     ZERO_NATIVE_GTK_EVENT_APP_DEACTIVATED = 8,
+    ZERO_NATIVE_GTK_EVENT_MENU_COMMAND = 9,
 } zero_native_gtk_event_kind_t;
 
 typedef struct {
@@ -105,6 +106,7 @@ void zero_native_gtk_bridge_respond_window(zero_native_gtk_host_t *host, uint64_
 void zero_native_gtk_bridge_respond_webview(zero_native_gtk_host_t *host, uint64_t window_id, const char *webview_label, size_t webview_label_len, const char *response, size_t response_len);
 void zero_native_gtk_emit_window_event(zero_native_gtk_host_t *host, uint64_t window_id, const char *name, size_t name_len, const char *detail_json, size_t detail_json_len);
 void zero_native_gtk_set_security_policy(zero_native_gtk_host_t *host, const char *allowed_origins, size_t allowed_origins_len, const char *external_urls, size_t external_urls_len, int external_action);
+void zero_native_gtk_set_menus(zero_native_gtk_host_t *host, const char *const *menu_titles, const size_t *menu_title_lens, size_t menu_count, const uint32_t *item_menu_indices, const char *const *item_labels, const size_t *item_label_lens, const char *const *item_commands, const size_t *item_command_lens, const char *const *item_keys, const size_t *item_key_lens, const uint32_t *item_modifiers, const int *item_separators, const int *item_enabled, const int *item_checked, size_t item_count);
 void zero_native_gtk_set_shortcuts(zero_native_gtk_host_t *host, const char *const *ids, const size_t *id_lens, const char *const *keys, const size_t *key_lens, const uint32_t *modifiers, size_t count);
 int zero_native_gtk_create_window(zero_native_gtk_host_t *host, uint64_t window_id, const char *window_title, size_t window_title_len, const char *window_label, size_t window_label_len, double x, double y, double width, double height, int restore_frame);
 int zero_native_gtk_focus_window(zero_native_gtk_host_t *host, uint64_t window_id);
